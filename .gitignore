@@ -1,0 +1,76 @@
+# DocForge MCP — commit source, docs, tests, and workflows only.
+# Completed MCP servers live under servers/<name>/ and are intentionally tracked.
+
+# Python caches / bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments / local dependency caches
+.venv/
+venv/
+.venv-build/
+venv-build/
+env/
+.env
+.env.*
+!.env.example
+.uv/
+uv.lock
+
+# Build and release outputs
+build/
+dist/
+output/
+artifacts/
+*.egg-info/
+.eggs/
+*.spec
+*.exe
+*.dll
+*.zip
+*.tar.gz
+
+# Local run logs / redirected output
+*.log
+build_out.txt
+build_err.txt
+test_out.txt
+test_err.txt
+
+# Generated document samples / scratch files
+*.tmp
+*.bak
+~$*
+
+# IDE / OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Keep repository automation and source documentation tracked
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
+!README.md
+!servers/**/README.md
+
+# Local build-only implementation files
+servers/*/converter.py
+servers/*/*_converter.py
+servers/*/markdownify_helper.py
+servers/*/converter_utils/
+
+# Local-only build script
+build.ps1

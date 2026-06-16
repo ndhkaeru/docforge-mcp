@@ -1,0 +1,58 @@
+name: Push
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Create venv
+        shell: pwsh
+        run: |
+          python -m venv .venv-build
+          .\.venv-build\Scripts\python.exe -m pip install -U pip
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          .\.venv-build\Scripts\python.exe -m pip install `
+            pytest `
+            "mcp[cli]" `
+            openpyxl `
+            pillow `
+            pdfminer.six `
+            pdfplumber `
+            mammoth `
+            python-pptx `
+            markdownify `
+            beautifulsoup4 `
+            lxml `
+            defusedxml `
+            charset-normalizer
+
+      - name: Compile Markdown server
+        shell: pwsh
+        run: .\.venv-build\Scripts\python.exe -m py_compile servers\md\main.py
+
+      - name: Run tests
+        shell: pwsh
+        run: .\.venv-build\Scripts\python.exe -m pytest -q
