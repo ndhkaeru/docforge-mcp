@@ -110,6 +110,16 @@ def test_read_section_by_heading_path(tmp_path):
     assert "from B" in section
     assert "from A" not in section
 
+def test_targeted_read_and_document_map_tools(tmp_path):
+    path = _write(tmp_path, "# A\n\nintro\n\n## Data\n\n| K | V |\n|---|---|\n| a | b |\n\n[link](target.md)\n")
+    assert "2 |" in M.md_read_range(path, 2, 3, include_line_numbers=True)
+    near = M.md_read_near(path, text="Data", before=1, after=2)
+    assert "## Data" in near and "| K | V |" in near
+    doc_map = M.md_get_document_map(path)
+    assert doc_map["heading_count"] == 2
+    assert doc_map["table_count"] == 1
+    assert doc_map["link_count"] == 1
+
 
 def test_replace_section_body_only(tmp_path):
     path = _write(tmp_path, "# A\n\nintro\n\n## B\n\nold body\n")
@@ -138,12 +148,39 @@ def test_search_returns_heading_context_without_cr(tmp_path):
     assert "\r" not in hit["text"]
     assert hit["heading"]["title"] == "Cài đặt"
 
+def test_replace_text_dry_run_does_not_write(tmp_path):
+    path = _write(tmp_path, "# A\n\nalpha alpha\n")
+    res = M.md_replace_text(path, "alpha", "beta", dry_run=True)
+    assert res["dry_run"] is True
+    assert res["replacement_count"] == 2
+    assert "alpha alpha" in Path(path).read_text(encoding="utf-8")
+
+def test_patch_lines_normalize_headings_and_internal_links(tmp_path):
+    (tmp_path / "ok.md").write_text("# OK\n", encoding="utf-8")
+    path = _write(tmp_path, "# A\n\n#### Too Deep\n\n[ok](ok.md)\n[bad](missing.md)\n")
+    patch = M.md_patch_lines(path, 3, 3, "## Fixed")
+    assert patch["changed"] is True
+    text = Path(path).read_text(encoding="utf-8")
+    assert "## Fixed" in text
+
+    path2 = _write(tmp_path, "# A\n\n#### Too Deep\n", name="levels.md")
+    dry = M.md_normalize_headings(path2, dry_run=True)
+    assert dry["change_count"] == 1
+    assert "#### Too Deep" in Path(path2).read_text(encoding="utf-8")
+    normalized = M.md_normalize_headings(path2)
+    assert normalized["changed"] is True
+    assert "## Too Deep" in Path(path2).read_text(encoding="utf-8")
+
+    links = M.md_check_internal_links(path)
+    assert links["problem_count"] == 1
+    assert links["remote_checked"] is False
+
 
 # --- T. Trimmed tool surface ------------------------------------------------
 
 def test_kept_tools_present():
     for name in ["markdown_outline", "read_markdown_section", "replace_markdown_section", "md_search", "md_insert_section",
-                 "md_move_section", "md_set_heading_level", "md_validate_links", "md_frontmatter", "md_split", "md_merge"]:
+                 "md_read_range", "md_read_near", "md_get_document_map", "md_patch_lines", "md_normalize_headings", "md_check_internal_links", "md_move_section", "md_set_heading_level", "md_validate_links", "md_frontmatter", "md_split", "md_merge"]:
         assert callable(getattr(M, name, None)), f"missing tool {name}"
 
 
@@ -184,6 +221,18 @@ def test_diagram_code_link_toc_and_stats_tools(tmp_path):
     assert M.md_get_anchor("Cài đặt")["href"] == "#cài-đặt"
     assert M.md_update_toc(path)["heading_count"] >= 1
     assert M.md_stats(path)["code_blocks"] == 1
+
+def test_large_read_tools_support_preview_and_metadata_only(tmp_path):
+    path = _write(tmp_path, "# A\n\n| H |\n|---|\n| 1 |\n| 2 |\n\n```python\n" + "x = 1\n" * 200 + "```\n")
+    section = M.read_markdown_section(path, heading="A", preview=True)
+    assert "truncated" in section
+    table = M.md_read_table(path, include_body=False)
+    assert "rows" not in table
+    assert table["headers"] == ["H"]
+    blocks = M.md_extract_code_blocks(path, include_body=False)
+    assert "source" not in blocks["blocks"][0]
+    preview = M.md_extract_code_blocks(path, max_chars=10)
+    assert "truncated" in preview["blocks"][0]["source"]
 
 
 def test_move_and_set_heading_level(tmp_path):

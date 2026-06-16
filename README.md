@@ -103,11 +103,11 @@ Markdown structure editor for `.md` and `.markdown` files.
 
 | Group | Tools |
 | --- | --- |
-| Outline/search/read | `markdown_outline`, `read_markdown_section`, `md_search`, `md_stats` |
-| Section edits | `replace_markdown_section`, `md_insert_section`, `md_delete_section`, `md_append_to_section`, `md_move_section`, `md_set_heading_level`, `md_rename_heading`, `md_replace_text` |
+| Outline/search/read | `markdown_outline`, `md_get_document_map`, `read_markdown_section`, `md_read_range`, `md_read_near`, `md_search`, `md_stats` |
+| Section edits | `replace_markdown_section`, `md_insert_section`, `md_delete_section`, `md_append_to_section`, `md_patch_lines`, `md_move_section`, `md_set_heading_level`, `md_normalize_headings`, `md_rename_heading`, `md_replace_text` |
 | Tables | `md_list_tables`, `md_read_table`, `md_format_table`, `md_edit_table`, `md_insert_table`, `md_table_export` |
 | Diagrams/code | `md_list_diagrams`, `md_read_diagram`, `md_insert_diagram`, `md_replace_diagram`, `md_validate_diagram`, `md_render_diagram`, `md_extract_code_blocks`, `md_replace_code_block`, `md_insert_code_block`, `md_tangle` |
-| Links/TOC/metadata | `md_list_links`, `md_rewrite_links`, `md_validate_links`, `md_list_images`, `md_get_anchor`, `md_update_toc`, `md_frontmatter` |
+| Links/TOC/metadata | `md_list_links`, `md_rewrite_links`, `md_validate_links`, `md_check_internal_links`, `md_list_images`, `md_get_anchor`, `md_update_toc`, `md_frontmatter` |
 | File operations | `md_split`, `md_merge`, `md_to_html` |
 
 ### `excel-tools`
@@ -116,9 +116,9 @@ One-shot Markdown export for Excel-family files plus session-based `.xlsx` workb
 
 | Group | Tools |
 | --- | --- |
-| One-shot conversion | `convert_to_markdown` for read-only Markdown export without `excel_load` |
+| One-shot conversion | `convert_to_markdown` for read-only Markdown export without `excel_load`, `excel_get_workbook_summary`, `excel_get_sheet_preview` |
 | Session lifecycle | `excel_get_info`, `excel_load`, `excel_save`, `excel_reload`, `excel_close` |
-| Reading/export | `excel_to_markdown`, `excel_get_rows`, `excel_get_cell`, `excel_get_column`, `excel_capture`, `excel_extract_images` |
+| Reading/export | `excel_to_markdown`, `excel_to_markdown_range`, `excel_read_range`, `excel_find_cells`, `excel_list_tables`, `excel_list_defined_names`, `excel_get_rows`, `excel_get_cell`, `excel_get_column`, `excel_capture`, `excel_extract_images` |
 | Sheets | `excel_add_sheet`, `excel_delete_sheet`, `excel_rename_sheet`, `excel_copy_sheet`, `excel_copy_sheet_to`, `excel_move_sheet` |
 | Rows/cells | `excel_clone_rows`, `excel_copy_row`, `excel_insert_rows`, `excel_edit_cells`, `excel_delete_rows`, `excel_clear_range`, `excel_find_rows`, `excel_fill_rows` |
 | Columns | `excel_insert_column`, `excel_copy_column`, `excel_delete_column`, `excel_fill_column` |
@@ -285,6 +285,7 @@ The workflow verifies tests, builds Windows x64 executables, generates SHA256 ch
 ## Notes and Limits
 
 - Excel `convert_to_markdown` is read-only and can handle Excel-family files readable by the converter; Excel session/edit/save tools are `.xlsx`-only to avoid silent data loss.
+- Use limit parameters such as `sheet_name`, `range_ref`, `max_rows`, `max_cols`, `preview`, `max_chars`, and `include_body=false` when available to keep tool responses small.
 - `excel_capture` requires LibreOffice on the machine running the MCP server.
 - Markdown diagram validation/rendering depends on optional external CLIs such as Mermaid CLI.
 - PDF conversion is best-effort text extraction, not pixel-perfect layout reconstruction.

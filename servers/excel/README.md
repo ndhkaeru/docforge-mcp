@@ -16,9 +16,9 @@ Implemented and included in the completed DocForge MCP server set.
 
 ## Recommended Workflow
 
-- Start with `excel_get_info` for sheet dimensions.
-- Use `convert_to_markdown` when you only need a Markdown export and do not need a session.
-- Prefer targeted reads such as `excel_get_rows`, `excel_get_cell`, and `excel_get_column` to avoid spending tokens on irrelevant workbook content.
+- Start with `excel_get_info`, `excel_get_workbook_summary`, or `excel_get_sheet_preview` for compact workbook context.
+- Use `convert_to_markdown` when you only need a Markdown export and do not need a session; pass `sheet_name`, `range_ref`, `max_rows`, or `max_cols` to keep output small.
+- Prefer targeted reads such as `excel_read_range`, `excel_find_cells`, `excel_get_rows`, `excel_get_cell`, and `excel_get_column` to avoid spending tokens on irrelevant workbook content.
 - Call `excel_load` and keep the returned `session_key`.
 - Inspect with `excel_to_markdown`, `excel_get_rows`, or cell/column tools.
 - Mutate the session, then call `excel_save` to write an `.xlsx`.
@@ -27,18 +27,25 @@ Implemented and included in the completed DocForge MCP server set.
 
 | Tool | Description |
 | --- | --- |
-| `convert_to_markdown` | Convert an Excel-family file to Markdown in one call without creating a session. |
+| `convert_to_markdown` | Convert an Excel-family file to Markdown in one call without creating a session; supports sheet/range/max row-column limits. |
+| `excel_get_workbook_summary` | Return a compact read-only workbook summary without creating a session. |
+| `excel_get_sheet_preview` | Return compact top-left previews for one sheet or all sheets without creating a session. |
 | `excel_get_info` | Return summary info about an Excel file: sheet names, row and column counts. |
 | `excel_load` | Load an Excel file into the server session cache and return a session_key. |
 | `excel_save` | Reconstruct an Excel file from session data and write it to disk. |
 | `excel_reload` | Reload session data from disk, discarding any unsaved in-memory changes. |
 | `excel_close` | Remove a session from the server cache to free memory. |
-| `excel_to_markdown` | Export session data as Markdown tables annotated with 0-based row/column indices. |
+| `excel_to_markdown` | Export session data as Markdown tables annotated with 0-based row/column indices; supports `max_rows` and `max_cols`. |
+| `excel_to_markdown_range` | Export one worksheet range as a compact Markdown table. |
+| `excel_list_tables` | List Excel table objects captured in the loaded workbook session. |
+| `excel_list_defined_names` | List workbook defined names and named ranges from the loaded session. |
 | `excel_capture` | Render a sheet as a PNG image using LibreOffice. |
 | `excel_extract_images` | Extract all embedded images from a sheet and save them to a directory. |
 | `excel_get_rows` | Get a range of rows from session data as JSON. |
+| `excel_read_range` | Read an exact rectangular range from a loaded worksheet. |
 | `excel_get_cell` | Get full metadata of a single cell. |
 | `excel_get_column` | Get all cells in a column as JSON. |
+| `excel_find_cells` | Find cells by literal text or regex across one sheet or the whole workbook. |
 | `excel_add_sheet` | Add a new empty sheet to the workbook session. |
 | `excel_delete_sheet` | Delete a sheet from the workbook session. Cannot delete the only sheet. |
 | `excel_rename_sheet` | Rename a sheet in the workbook session. |
