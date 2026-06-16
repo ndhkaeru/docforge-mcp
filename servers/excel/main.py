@@ -84,6 +84,49 @@ def _find_sheet(data: dict, name: str) -> dict:
         raise ValueError(f"Sheet '{name}' not found. Available: {available}")
     return sheet
 
+def _excel_range_to_indices(range_ref: str) -> tuple[int, int, int, int]:
+    """Convert an Excel A1 range to 0-based inclusive row/column bounds."""
+    import openpyxl.utils
+
+    normalized = range_ref.split("!", 1)[-1].replace("$", "")
+    if ":" not in normalized:
+        normalized = f"{normalized}:{normalized}"
+    min_col, min_row, max_col, max_row = openpyxl.utils.range_boundaries(normalized)
+    return min_row - 1, max_row - 1, min_col - 1, max_col - 1
+
+def _range_from_args(
+    range_ref: str | None,
+    start_row: int | None,
+    end_row: int | None,
+    start_col: int | None,
+    end_col: int | None,
+    max_row: int,
+    max_col: int,
+) -> tuple[int, int, int, int]:
+    if range_ref:
+        return _excel_range_to_indices(range_ref)
+    r1 = 0 if start_row is None else start_row
+    r2 = max_row - 1 if end_row is None else end_row - 1
+    c1 = 0 if start_col is None else start_col
+    c2 = max_col - 1 if end_col is None else end_col - 1
+    if min(r1, r2, c1, c2) < 0 or r1 > r2 or c1 > c2:
+        raise ValueError("Invalid range bounds. Use 0-based start and exclusive end indexes.")
+    return r1, r2, c1, c2
+
+def _limit_workbook_data(data: dict, max_rows: int | None = None, max_cols: int | None = None) -> dict:
+    """Return a copy of serialized workbook data trimmed for Markdown export."""
+    if max_rows is None and max_cols is None:
+        return data
+    limited = copy.deepcopy(data)
+    for sheet in limited.get("sheets", []):
+        rows = sheet.get("rows", [])
+        if max_rows is not None:
+            sheet["rows"] = rows[:max_rows]
+        if max_cols is not None:
+            for row in sheet.get("rows", []):
+                row["cells"] = row.get("cells", [])[:max_cols]
+    return limited
+
 
 # ── Structural-shift machinery ────────────────────────────────────────────────
 # When rows/columns are inserted or deleted, every piece of coordinate-anchored
@@ -712,8 +755,10 @@ IMPORTANT — writing values that start with = + - :
   • Values starting with "+" or "-" are already stored as text automatically
     when they are not numbers — no prefix needed.
   • Merging over an existing merged region raises an error — unmerge first.
-  • .xlsm/.xlsb/.xls are rejected (macros/binary would be lost) — convert
-    to .xlsx first.
+  • convert_to_markdown is read-only and can accept Excel-family files readable
+    by the converter.
+  • Session/edit/save tools are .xlsx-only. .xlsm/.xlsb/.xls are rejected
+    there because macros/binary content would be lost — convert to .xlsx first.
   • excel_load with sheet_name loads ONLY that sheet, but excel_save merges
     the other sheets back from disk automatically — nothing is lost.
 
@@ -723,6 +768,11 @@ IMPORTANT — session_key:
   • You do NOT need to reload the file between edits — just reuse the same key.
   • Call excel_reload to discard in-memory changes and re-read from disk.
   • Call excel_close when done to free server memory.
+
+Quick reference — one-shot conversion:
+  convert_to_markdown  read-only Markdown export; supports sheet/range/max limits
+  excel_get_workbook_summary compact file summary without excel_load/session
+  excel_get_sheet_preview compact top-left sheet preview without session
 
 Quick reference — session lifecycle:
   excel_get_info       sheet names + dimensions (no session needed)
@@ -739,10 +789,15 @@ Quick reference — sheet management:
   excel_move_sheet     reorder a sheet to a new position
 
 Quick reference — reading:
-  excel_to_markdown    annotated Markdown view (use to plan edits)
+  excel_to_markdown    annotated Markdown view; supports max_rows/max_cols
+  excel_to_markdown_range Markdown table for one A1/0-based range
+  excel_list_tables    list Excel table objects captured in session
+  excel_list_defined_names list workbook defined names/named ranges
   excel_get_rows       row range as JSON; values_only=True for compact output
+  excel_read_range     exact A1 or 0-based rectangular range; token-efficient
   excel_get_cell       single cell with full style metadata
   excel_get_column     all cells in a column
+  excel_find_cells     find literal/regex values or formulas across workbook
 
 Quick reference — editing rows:
   excel_edit_cells     edit cell values across one or more rows
@@ -783,6 +838,43 @@ mcp = FastMCP("excel-tools", instructions=_INSTRUCTIONS)
 # ── 1. Info ───────────────────────────────────────────────────────────────────
 
 @mcp.tool()
+def convert_to_markdown(file_path: str, sheet_name: str | None = None, range_ref: str | None = None, max_rows: int | None = None, max_cols: int | None = None, include_styles: bool = False) -> TextContent:
+    """
+    Convert an Excel-family file to Markdown in one call without creating a session.
+
+    This read-only conversion is for quick inspection/export workflows. Use
+    excel_load + excel_to_markdown when you need Markdown generated from an
+    editable .xlsx in-memory session, including unsaved changes.
+
+    Args:
+        file_path: Path or file:// URI to an Excel-family file readable by the converter.
+        sheet_name: Sheet to export; omit to export all sheets.
+        range_ref: Optional A1 range to export from sheet_name.
+        max_rows: Optional maximum rows per exported sheet/range.
+        max_cols: Optional maximum columns per exported sheet/range.
+        include_styles: Reserved for clients; current Markdown export remains content-focused.
+
+    Returns:
+        Markdown content (text/markdown) representing workbook sheets.
+    """
+    from excel_converter import convert_excel_to_markdown
+
+    path = uri_to_path(file_path)
+    data = serialize_excel(str(path), sheet_name)
+    if range_ref:
+        if not sheet_name:
+            raise ValueError("sheet_name is required when range_ref is provided")
+        r1, r2, c1, c2 = _excel_range_to_indices(range_ref)
+        for sheet in data.get("sheets", []):
+            sheet["rows"] = [
+                {**row, "cells": row.get("cells", [])[c1:c2 + 1]}
+                for row in sheet.get("rows", [])[r1:r2 + 1]
+            ]
+    data = _limit_workbook_data(data, max_rows=max_rows, max_cols=max_cols)
+    markdown = convert_excel_to_markdown(data)
+    return TextContent(type="text", text=markdown, mimeType="text/markdown")
+
+@mcp.tool()
 def excel_get_info(uri: str) -> str:
     """
     Return summary info about an Excel file: sheet names, row and column counts.
@@ -797,15 +889,24 @@ def excel_get_info(uri: str) -> str:
     """
     import openpyxl
     path = uri_to_path(uri)
-    wb = openpyxl.load_workbook(str(path), read_only=True)
+    wb = openpyxl.load_workbook(str(path), read_only=False, data_only=False)
     try:
         info = {
             "source": str(path),
-            "sheets": [
-                {"name": name, "max_row": wb[name].max_row, "max_column": wb[name].max_column}
-                for name in wb.sheetnames
-            ],
+            "sheets": [],
         }
+        for name in wb.sheetnames:
+            ws = wb[name]
+            info["sheets"].append({
+                "name": name,
+                "max_row": ws.max_row,
+                "max_column": ws.max_column,
+                "state": ws.sheet_state,
+                "hidden": ws.sheet_state != "visible",
+                "freeze_panes": ws.freeze_panes,
+                "merged_ranges": len(ws.merged_cells.ranges),
+                "table_count": len(getattr(ws, "tables", {}) or {}),
+            })
     finally:
         wb.close()
     return json.dumps(info, ensure_ascii=False)
@@ -952,7 +1053,7 @@ def excel_close(session_key: str) -> str:
 # ── 5. To Markdown ────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def excel_to_markdown(session_key: str, sheet_name: str | None = None) -> TextContent:
+def excel_to_markdown(session_key: str, sheet_name: str | None = None, max_rows: int | None = None, max_cols: int | None = None) -> TextContent:
     """
     Export session data as Markdown tables annotated with 0-based row/column indices.
 
@@ -963,11 +1064,13 @@ def excel_to_markdown(session_key: str, sheet_name: str | None = None) -> TextCo
     Args:
         session_key: Key returned by excel_load
         sheet_name: Sheet to export; omit to export all sheets
+        max_rows: Optional maximum rows per exported sheet
+        max_cols: Optional maximum columns per exported sheet
 
     Returns:
         Markdown content (text/markdown) — one table per sheet
     """
-    data = _get_session(session_key)
+    data = _limit_workbook_data(_get_session(session_key), max_rows=max_rows, max_cols=max_cols)
     from excel_converter import convert_excel_to_markdown
     markdown = convert_excel_to_markdown(data, sheet_name=sheet_name)
     return TextContent(type="text", text=markdown, mimeType="text/markdown")
@@ -1175,6 +1278,171 @@ def excel_get_rows(
     return json.dumps(result, default=str, ensure_ascii=False)
 
 
+@mcp.tool()
+def excel_read_range(
+    session_key: str,
+    sheet_name: str,
+    range_ref: str | None = None,
+    start_row: int | None = None,
+    end_row: int | None = None,
+    start_col: int | None = None,
+    end_col: int | None = None,
+    values_only: bool = True,
+) -> str:
+    """
+    Read an exact rectangular range from a loaded worksheet.
+
+    Provide either range_ref (for example "A1:D20") or 0-based bounds where
+    end_row/end_col are exclusive. This is more token-efficient than reading a
+    whole sheet when only a small area is needed.
+    """
+    data = _get_session(session_key)
+    sheet = _find_sheet(data, sheet_name)
+    rows = sheet.get("rows", [])
+    max_row = len(rows)
+    max_col = max((len(row.get("cells", [])) for row in rows), default=0)
+    if max_row == 0 or max_col == 0:
+        return json.dumps({"sheet_name": sheet_name, "range": None, "values": []}, ensure_ascii=False)
+    r1, r2, c1, c2 = _range_from_args(range_ref, start_row, end_row, start_col, end_col, max_row, max_col)
+    r2 = min(r2, max_row - 1)
+    c2 = min(c2, max_col - 1)
+    values = []
+    for row_index in range(r1, r2 + 1):
+        cells = rows[row_index].get("cells", []) if row_index < len(rows) else []
+        row_values = []
+        for col_index in range(c1, c2 + 1):
+            cell = cells[col_index] if col_index < len(cells) else None
+            if values_only:
+                row_values.append(None if not cell or cell.get("merge") == "slave" else cell.get("v"))
+            else:
+                row_values.append(_strip_private(cell) if cell else None)
+        values.append(row_values)
+    result = {
+        "sheet_name": sheet_name,
+        "range": {"start_row": r1, "end_row": r2, "start_col": c1, "end_col": c2},
+        "values_only": values_only,
+        "values": values,
+    }
+    return json.dumps(result, default=str, ensure_ascii=False)
+
+@mcp.tool()
+def excel_find_cells(
+    session_key: str,
+    query: str,
+    sheet_name: str | None = None,
+    regex: bool = False,
+    case_sensitive: bool = False,
+    match_in: str = "value",
+    max_results: int = 100,
+) -> str:
+    """Find cells by literal text or regex across one sheet or the whole workbook."""
+    data = _get_session(session_key)
+    flags = 0 if case_sensitive else re.IGNORECASE
+    pattern = re.compile(query if regex else re.escape(query), flags)
+    sheets = [_find_sheet(data, sheet_name)] if sheet_name else data.get("sheets", [])
+    results = []
+    for sheet in sheets:
+        for row_index, row in enumerate(sheet.get("rows", [])):
+            for col_index, cell in enumerate(row.get("cells", [])):
+                if cell.get("merge") == "slave":
+                    continue
+                haystack = cell.get("v")
+                if match_in == "formula":
+                    if not isinstance(haystack, str) or not haystack.startswith("="):
+                        continue
+                elif match_in != "value":
+                    raise ValueError("match_in must be 'value' or 'formula'")
+                text = "" if haystack is None else str(haystack)
+                if pattern.search(text):
+                    results.append({"sheet_name": sheet["name"], "row_index": row_index, "col_index": col_index, "value": haystack})
+                    if len(results) >= max_results:
+                        return json.dumps({"query": query, "truncated": True, "count": len(results), "matches": results}, default=str, ensure_ascii=False)
+    return json.dumps({"query": query, "truncated": False, "count": len(results), "matches": results}, default=str, ensure_ascii=False)
+
+@mcp.tool()
+def excel_get_workbook_summary(file_path: str) -> str:
+    """Return a compact read-only workbook summary without creating a session."""
+    path = uri_to_path(file_path)
+    data = serialize_excel(str(path))
+    sheets = []
+    for sheet in data.get("sheets", []):
+        rows = sheet.get("rows", [])
+        max_cols = max((len(row.get("cells", [])) for row in rows), default=0)
+        formula_count = 0
+        merge_origins = 0
+        non_empty = 0
+        for row in rows:
+            for cell in row.get("cells", []):
+                value = cell.get("v")
+                if value not in (None, ""):
+                    non_empty += 1
+                if isinstance(value, str) and value.startswith("="):
+                    formula_count += 1
+                merge = cell.get("merge")
+                if isinstance(merge, dict) and merge:
+                    merge_origins += 1
+        sheets.append({
+            "name": sheet.get("name"),
+            "rows": len(rows),
+            "columns": max_cols,
+            "non_empty_cells": non_empty,
+            "formula_count": formula_count,
+            "merged_ranges": merge_origins,
+            "freeze": sheet.get("freeze"),
+            "validations": len(sheet.get("validations") or []),
+        })
+    return json.dumps({"source": str(path), "sheet_count": len(sheets), "sheets": sheets}, default=str, ensure_ascii=False)
+@mcp.tool()
+def excel_to_markdown_range(session_key: str, sheet_name: str, range_ref: str | None = None, start_row: int | None = None, end_row: int | None = None, start_col: int | None = None, end_col: int | None = None) -> TextContent:
+    """Export one worksheet range as a compact Markdown table."""
+    data = json.loads(excel_read_range(session_key, sheet_name, range_ref, start_row, end_row, start_col, end_col, True))
+    values = data["values"]
+    if not values:
+        return TextContent(type="text", text="", mimeType="text/markdown")
+    headers = ["" if value is None else str(value) for value in values[0]]
+    if not headers:
+        return TextContent(type="text", text="", mimeType="text/markdown")
+    rows = values[1:] if len(values) > 1 else []
+    def cell(value):
+        return "" if value is None else str(value).replace("|", "\\|").replace("\n", "<br>")
+    lines = ["| " + " | ".join(cell(value) for value in headers) + " |"]
+    lines.append("| " + " | ".join("---" for _ in headers) + " |")
+    lines.extend("| " + " | ".join(cell((row + [None] * len(headers))[index]) for index in range(len(headers))) + " |" for row in rows)
+    return TextContent(type="text", text="\n".join(lines), mimeType="text/markdown")
+
+@mcp.tool()
+def excel_list_tables(session_key: str, sheet_name: str | None = None) -> str:
+    """List Excel table objects captured in the loaded workbook session."""
+    data = _get_session(session_key)
+    sheets = [_find_sheet(data, sheet_name)] if sheet_name else data.get("sheets", [])
+    tables = []
+    for sheet in sheets:
+        for table in sheet.get("tables") or []:
+            tables.append({"sheet_name": sheet["name"], **table})
+    return json.dumps({"count": len(tables), "tables": tables}, default=str, ensure_ascii=False)
+
+@mcp.tool()
+def excel_list_defined_names(session_key: str) -> str:
+    """List workbook defined names and named ranges from the loaded session."""
+    data = _get_session(session_key)
+    names = data.get("named_ranges") or []
+    return json.dumps({"count": len(names), "defined_names": _strip_private(names)}, default=str, ensure_ascii=False)
+
+@mcp.tool()
+def excel_get_sheet_preview(file_path: str, max_rows: int = 20, max_cols: int = 10, sheet_name: str | None = None) -> str:
+    """Return compact top-left previews for one sheet or all sheets without creating a session."""
+    path = uri_to_path(file_path)
+    data = serialize_excel(str(path), sheet_name)
+    previews = []
+    for sheet in data.get("sheets", []):
+        rows = []
+        for row in sheet.get("rows", [])[:max_rows]:
+            values = []
+            for cell in row.get("cells", [])[:max_cols]:
+                values.append(None if cell.get("merge") == "slave" else cell.get("v"))
+            rows.append(values)
+        previews.append({"sheet_name": sheet["name"], "rows": rows, "truncated_rows": len(sheet.get("rows", [])) > max_rows})
+    return json.dumps({"source": str(path), "max_rows": max_rows, "max_cols": max_cols, "sheets": previews}, default=str, ensure_ascii=False)
 # ── 7. Get cell ───────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -2514,3 +2782,7 @@ def excel_fill_rows(
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
+
+
+
+

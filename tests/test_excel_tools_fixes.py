@@ -14,6 +14,7 @@ C.  Internal hyperlinks, docProps and workbook view survive a round-trip;
 """
 import json
 import sys
+import types
 import zipfile
 from pathlib import Path
 
@@ -22,7 +23,9 @@ import pytest
 from openpyxl.comments import Comment
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import PatternFill
+from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.workbook.defined_name import DefinedName
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "servers" / "excel"))
@@ -86,6 +89,122 @@ def test_macro_formats_rejected(tmp_path):
     fake.write_bytes(b"PK")
     with pytest.raises(ValueError, match="not supported"):
         M.excel_load(str(fake))
+
+def test_convert_to_markdown_without_session(tmp_path, monkeypatch):
+    src = tmp_path / "simple.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws.append(["Name", "Score"])
+    ws.append(["Ada", 10])
+    wb.save(src)
+
+    def fake_convert_excel_to_markdown(data, *, sheet_name=None):
+        assert sheet_name is None
+        assert data["sheets"][0]["name"] == "Data"
+        assert data["sheets"][0]["rows"][1]["cells"][0]["v"] == "Ada"
+        return "# Data\n\n| Name | Score |\n| --- | --- |\n| Ada | 10 |"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "excel_converter",
+        types.SimpleNamespace(convert_excel_to_markdown=fake_convert_excel_to_markdown),
+    )
+
+    before_sessions = dict(M._sessions)
+    result = M.convert_to_markdown(str(src))
+
+    assert result.mimeType == "text/markdown"
+    assert "| Ada | 10 |" in result.text
+    assert M._sessions == before_sessions
+
+def test_convert_to_markdown_accepts_sheet_range_and_limits(tmp_path, monkeypatch):
+    src = tmp_path / "limited.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws.append(["A", "B", "C"])
+    ws.append([1, 2, 3])
+    ws.append([4, 5, 6])
+    wb.save(src)
+
+    seen = {}
+
+    def fake_convert_excel_to_markdown(data, *, sheet_name=None):
+        seen["sheets"] = data["sheets"]
+        return "ok"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "excel_converter",
+        types.SimpleNamespace(convert_excel_to_markdown=fake_convert_excel_to_markdown),
+    )
+
+    result = M.convert_to_markdown(str(src), sheet_name="Data", range_ref="B1:C3", max_rows=2, max_cols=1)
+    assert result.text == "ok"
+    rows = seen["sheets"][0]["rows"]
+    assert len(rows) == 2
+    assert len(rows[0]["cells"]) == 1
+    assert rows[0]["cells"][0]["v"] == "B"
+
+def test_targeted_range_find_and_summary_tools(tmp_path):
+    src = tmp_path / "targeted.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws.append(["Name", "Score", "Formula"])
+    ws.append(["Ada", 10, "=B2*2"])
+    ws.append(["Grace", 20, "=B3*2"])
+    ws.merge_cells("A4:B4")
+    ws["A4"] = "Merged"
+    wb.save(src)
+
+    key = str(src.resolve())
+    M.excel_load(str(src))
+    read = json.loads(M.excel_read_range(key, "Data", range_ref="A2:B3"))
+    assert read["values"] == [["Ada", 10], ["Grace", 20]]
+
+    matches = json.loads(M.excel_find_cells(key, "Ada"))
+    assert matches["count"] == 1
+    assert matches["matches"][0]["row_index"] == 1
+    formulas = json.loads(M.excel_find_cells(key, "B3", match_in="formula"))
+    assert formulas["matches"][0]["value"] == "=B3*2"
+    M.excel_close(key)
+
+    summary = json.loads(M.excel_get_workbook_summary(str(src)))
+    assert summary["sheet_count"] == 1
+    assert summary["sheets"][0]["formula_count"] == 2
+    assert summary["sheets"][0]["merged_ranges"] == 1
+
+def test_excel_table_defined_name_preview_and_markdown_range(tmp_path):
+    src = tmp_path / "metadata.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws.append(["Name", "Score"])
+    ws.append(["Ada", 10])
+    ws.append(["Grace", 20])
+    table = Table(displayName="Scores", ref="A1:B3")
+    table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+    ws.add_table(table)
+    wb.defined_names["ScoreRange"] = DefinedName("ScoreRange", attr_text="Data!$B$2:$B$3")
+    wb.save(src)
+
+    info = json.loads(M.excel_get_info(str(src)))
+    assert info["sheets"][0]["table_count"] == 1
+
+    key = str(src.resolve())
+    M.excel_load(str(src))
+    tables = json.loads(M.excel_list_tables(key))
+    assert tables["tables"][0]["name"] == "Scores"
+    names = json.loads(M.excel_list_defined_names(key))
+    assert names["defined_names"][0]["name"] == "ScoreRange"
+    md = M.excel_to_markdown_range(key, "Data", range_ref="A1:B2")
+    assert "| Name | Score |" in md.text
+    M.excel_close(key)
+
+    preview = json.loads(M.excel_get_sheet_preview(str(src), max_rows=2, max_cols=1))
+    assert preview["sheets"][0]["rows"] == [["Name"], ["Ada"]]
 
 
 # ── A3 ────────────────────────────────────────────────────────────────────────

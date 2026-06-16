@@ -21,11 +21,14 @@ mcp = FastMCP(
     "md-tools",
     instructions=(
         "Local-first Markdown structure editor. Start with markdown_outline to inspect "
-        "headings, line numbers, slugs, and section spans; use md_search when the target "
-        "text is unknown; use read_markdown_section for focused reads. Prefer heading_path "
+        "headings, line numbers, slugs, and section spans; use md_get_document_map for "
+        "a compact full document map; use md_search or md_read_near when the target "
+        "text is unknown; use read_markdown_section or md_read_range for focused reads. "
+        "Use preview/max_chars/include_body on large reads to reduce token output. Prefer heading_path "
         "when duplicate titles exist. For section edits use replace_markdown_section, "
-        "md_insert_section, md_delete_section, md_append_to_section, md_move_section, "
-        "md_set_heading_level, or md_rename_heading, then re-read the affected section. "
+        "md_insert_section, md_delete_section, md_append_to_section, md_patch_lines, "
+        "md_move_section, md_set_heading_level, md_normalize_headings, or md_rename_heading, "
+        "then re-read the affected section. "
         "Use table, diagram, code-block, link/image, TOC, frontmatter, split/merge, and "
         "stats tools for Markdown-native operations. Tools that return Markdown content "
         "return raw Markdown text for direct rendering; whole-file arbitrary reads belong "
@@ -412,6 +415,12 @@ def _read_block_source(content: str, block: dict[str, Any]) -> str:
     lines = _to_lines(content)
     return "\n".join(line.rstrip("\r") for line in lines[block["start_line"] : block["end_line"] - 1])
 
+def _limit_text(value: str, max_chars: int | None = None, preview: bool = False) -> str:
+    limit = max_chars if max_chars is not None else (1000 if preview else None)
+    if limit is None or limit < 0 or len(value) <= limit:
+        return value
+    return value[:limit] + "\n… truncated …"
+
 
 def _split_frontmatter(content: str) -> tuple[str | None, str]:
     lines = _to_lines(content)
@@ -524,7 +533,7 @@ def markdown_outline(path: str, max_depth: int | None = None, compact: bool = Fa
 
 
 @mcp.tool()
-def read_markdown_section(path: str, heading: str | None = None, heading_path: list[str] | None = None, exact: bool = False, include_heading: bool = True, include_subsections: bool = True, include_line_numbers: bool = False, max_lines: int | None = None, max_bytes: int | None = None) -> str:
+def read_markdown_section(path: str, heading: str | None = None, heading_path: list[str] | None = None, exact: bool = False, include_heading: bool = True, include_subsections: bool = True, include_line_numbers: bool = False, max_lines: int | None = None, max_bytes: int | None = None, max_chars: int | None = None, preview: bool = False) -> str:
     """Return a Markdown section as raw Markdown text by heading name or heading path."""
     if heading is None and heading_path is None:
         raise ValueError("Either heading or heading_path is required")
@@ -536,9 +545,76 @@ def read_markdown_section(path: str, heading: str | None = None, heading_path: l
     start_line = selected.line if include_heading else selected.line + 1
     if start_line > section_end:
         return ""
-    return _slice_lines(content, start_line, section_end, include_line_numbers, max_lines, max_bytes)
+    return _limit_text(_slice_lines(content, start_line, section_end, include_line_numbers, max_lines, max_bytes), max_chars, preview)
 
 
+@mcp.tool()
+def md_read_range(path: str, start_line: int, end_line: int, include_line_numbers: bool = False, max_lines: int | None = None, max_bytes: int | None = None) -> str:
+    """Read a precise 1-based inclusive Markdown line range."""
+    _, content, _, total_lines, _ = _load_markdown_file(path)
+    if start_line < 1 or end_line < start_line:
+        raise ValueError("Use 1-based inclusive line numbers with end_line >= start_line")
+    return _slice_lines(content, start_line, min(end_line, total_lines), include_line_numbers, max_lines, max_bytes)
+
+@mcp.tool()
+def md_read_near(path: str, text: str | None = None, regex: str | None = None, line: int | None = None, before: int = 5, after: int = 5, case_sensitive: bool = False, include_line_numbers: bool = True, max_bytes: int | None = None) -> str:
+    """Read Markdown context around a matching text/regex or around a line number."""
+    _, content, _, total_lines, _ = _load_markdown_file(path)
+    if line is None:
+        if (text is None) == (regex is None):
+            raise ValueError("Provide exactly one of line, text, or regex")
+        flags = 0 if case_sensitive else re.IGNORECASE
+        pattern = re.compile(regex if regex is not None else re.escape(text or ""), flags)
+        for line_number, raw_line in enumerate(_to_lines(content), start=1):
+            if pattern.search(raw_line):
+                line = line_number
+                break
+        if line is None:
+            raise ValueError("No matching text found")
+    start = max(1, line - max(before, 0))
+    end = min(total_lines, line + max(after, 0))
+    return _slice_lines(content, start, end, include_line_numbers, None, max_bytes)
+
+@mcp.tool()
+def md_get_document_map(path: str) -> dict[str, Any]:
+    """Return a compact map of headings, tables, diagrams, code blocks, links, and images."""
+    resolved_path, content, _, total_lines, size = _load_markdown_file(path)
+    headings = [_heading_metadata(heading) for heading in _parse_headings(content)]
+    tables = [{k: v for k, v in table.items() if k != "raw_lines"} for table in _find_tables(content)]
+    diagrams = _find_fenced_blocks(content, {"mermaid", "plantuml", "dot", "graphviz"})
+    code_blocks = _find_fenced_blocks(content, None)
+    inline_link_re = re.compile(r"!?\[([^\]]*)\]\(([^)]+)\)")
+    ref_link_re = re.compile(r"^\s*\[([^\]]+)\]:\s*(\S+)")
+    links = []
+    images = []
+    for line_number, raw_line in enumerate(_to_lines(content), start=1):
+        line_text = raw_line.rstrip("\r")
+        for match in inline_link_re.finditer(line_text):
+            item = {"line": line_number, "text": match.group(1), "target": match.group(2)}
+            if match.group(0).startswith("!"):
+                images.append({"line": line_number, "alt": match.group(1), "src": match.group(2)})
+            else:
+                links.append({"type": "inline", **item})
+        ref_match = ref_link_re.match(line_text)
+        if ref_match:
+            links.append({"type": "reference", "line": line_number, "text": ref_match.group(1), "target": ref_match.group(2)})
+    return {
+        "path": str(resolved_path),
+        "bytes": size,
+        "total_lines": total_lines,
+        "heading_count": len(headings),
+        "table_count": len(tables),
+        "diagram_count": len(diagrams),
+        "code_block_count": len(code_blocks),
+        "link_count": len(links),
+        "image_count": len(images),
+        "headings": headings,
+        "tables": tables,
+        "diagrams": diagrams,
+        "code_blocks": code_blocks,
+        "links": links,
+        "images": images,
+    }
 @mcp.tool()
 def replace_markdown_section(path: str, new_content: str, heading: str | None = None, heading_path: list[str] | None = None, exact: bool = False, include_heading: bool = False, include_subsections: bool = True, ensure_trailing_newline: bool = True) -> dict[str, Any]:
     """Replace a Markdown section by heading name or heading path without exact text matching."""
@@ -695,7 +771,7 @@ def md_rename_heading(path: str, new_title: str, heading: str | None = None, hea
 
 
 @mcp.tool()
-def md_replace_text(path: str, find: str, replace: str, regex: bool = False, case_sensitive: bool = True, heading: str | None = None, heading_path: list[str] | None = None, exact: bool = False, max_replacements: int = 0) -> dict[str, Any]:
+def md_replace_text(path: str, find: str, replace: str, regex: bool = False, case_sensitive: bool = True, heading: str | None = None, heading_path: list[str] | None = None, exact: bool = False, max_replacements: int = 0, dry_run: bool = False) -> dict[str, Any]:
     """Find and replace literal or regex text in the whole document or one section."""
     resolved_path, content, encoding, _, size = _load_markdown_file(path)
     flags = 0 if case_sensitive else re.IGNORECASE
@@ -706,6 +782,8 @@ def md_replace_text(path: str, find: str, replace: str, regex: bool = False, cas
         start_line, end_line = selected.line + 1, section_end
     segment = _slice_lines(content, start_line, end_line, False, None, None)
     replaced, count = pattern.subn(replace, segment, count=max_replacements if max_replacements > 0 else 0)
+    if dry_run:
+        return {"success": True, "path": str(resolved_path), "changed": False, "dry_run": True, "replacement_count": count, "start_line": start_line, "end_line": end_line}
     updated = _replace_line_range(content, start_line, end_line, replaced + ("\n" if replaced else ""))
     write = _write_markdown_file(resolved_path, updated, encoding)
     return {"success": True, "path": str(resolved_path), **write, "bytes_before": size, "replacement_count": count}
@@ -720,12 +798,18 @@ def md_list_tables(path: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def md_read_table(path: str, table_index: int = 0, heading: str | None = None, heading_path: list[str] | None = None, exact: bool = False) -> dict[str, Any]:
+def md_read_table(path: str, table_index: int = 0, heading: str | None = None, heading_path: list[str] | None = None, exact: bool = False, include_body: bool = True, max_rows: int | None = None) -> dict[str, Any]:
     """Read a Markdown pipe table as structured headers and rows."""
     resolved_path, content, _, _, _ = _load_markdown_file(path)
     table = _select_table(content, table_index, heading, heading_path, exact)
     raw = table["raw_lines"]
-    return {"path": str(resolved_path), "table": {key: value for key, value in table.items() if key != "raw_lines"}, "headers": table["headers"], "rows": [_parse_pipe_row(line) for line in raw[2:]], "alignments": _table_alignments(raw[1], table["columns"])}
+    rows = [_parse_pipe_row(line) for line in raw[2:]]
+    if max_rows is not None:
+        rows = rows[:max_rows]
+    result = {"path": str(resolved_path), "table": {key: value for key, value in table.items() if key != "raw_lines"}, "headers": table["headers"], "alignments": _table_alignments(raw[1], table["columns"])}
+    if include_body:
+        result["rows"] = rows
+    return result
 
 
 @mcp.tool()
@@ -833,11 +917,14 @@ def md_list_diagrams(path: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def md_read_diagram(path: str, diagram_index: int = 0) -> dict[str, Any]:
+def md_read_diagram(path: str, diagram_index: int = 0, include_body: bool = True, max_chars: int | None = None, preview: bool = False) -> dict[str, Any]:
     """Read the source of a fenced diagram block."""
     resolved_path, content, _, _, _ = _load_markdown_file(path)
     block = _find_fenced_blocks(content, {"mermaid", "plantuml", "puml", "dot", "graphviz"})[diagram_index]
-    return {"path": str(resolved_path), "diagram": block, "source": _read_block_source(content, block)}
+    result = {"path": str(resolved_path), "diagram": block}
+    if include_body:
+        result["source"] = _limit_text(_read_block_source(content, block), max_chars, preview)
+    return result
 
 
 @mcp.tool()
@@ -853,7 +940,7 @@ def md_replace_diagram(path: str, source: str, diagram_index: int = 0) -> dict[s
 
 
 @mcp.tool()
-def md_extract_code_blocks(path: str, language: str | None = None, regex_language: bool = False) -> dict[str, Any]:
+def md_extract_code_blocks(path: str, language: str | None = None, regex_language: bool = False, include_body: bool = True, max_chars: int | None = None, preview: bool = False) -> dict[str, Any]:
     """List fenced code blocks and return their source."""
     resolved_path, content, _, _, _ = _load_markdown_file(path)
     blocks = _find_fenced_blocks(content)
@@ -863,7 +950,13 @@ def md_extract_code_blocks(path: str, language: str | None = None, regex_languag
             blocks = [block for block in blocks if pattern.search(block["language"])]
         else:
             blocks = [block for block in blocks if block["language"] == language.casefold()]
-    return {"path": str(resolved_path), "block_count": len(blocks), "blocks": [{**block, "source": _read_block_source(content, block)} for block in blocks]}
+    result_blocks = []
+    for block in blocks:
+        item = dict(block)
+        if include_body:
+            item["source"] = _limit_text(_read_block_source(content, block), max_chars, preview)
+        result_blocks.append(item)
+    return {"path": str(resolved_path), "block_count": len(blocks), "blocks": result_blocks}
 
 
 @mcp.tool()
@@ -956,6 +1049,65 @@ def md_stats(path: str) -> dict[str, Any]:
     words = re.findall(r"\b\w+\b", content, re.UNICODE)
     return {"path": str(resolved_path), "bytes": size, "lines": total_lines, "words": len(words), "reading_time_minutes": max(1, round(len(words) / 200)), "heading_count": len(headings), "sections": len(headings), "tables": len(_find_tables(content)), "code_blocks": len(_find_fenced_blocks(content))}
 
+
+@mcp.tool()
+def md_patch_lines(path: str, start_line: int, end_line: int, replacement: str, ensure_trailing_newline: bool = True) -> dict[str, Any]:
+    """Replace a precise 1-based inclusive line range with Markdown text."""
+    resolved_path, content, encoding, _, size = _load_markdown_file(path)
+    if start_line < 1 or end_line < start_line - 1:
+        raise ValueError("Use 1-based lines; end_line may be start_line - 1 only for insertion")
+    new_text = replacement
+    if ensure_trailing_newline and new_text and not new_text.endswith("\n"):
+        new_text += "\n"
+    updated = _replace_line_range(content, start_line, end_line, new_text)
+    write = _write_markdown_file(resolved_path, updated, encoding)
+    return {"success": True, "path": str(resolved_path), **write, "bytes_before": size, "start_line": start_line, "end_line": end_line}
+
+@mcp.tool()
+def md_normalize_headings(path: str, max_increment: int = 1, dry_run: bool = False) -> dict[str, Any]:
+    """Normalize heading hierarchy so levels do not jump by more than max_increment."""
+    resolved_path, content, encoding, _, size = _load_markdown_file(path)
+    lines = _to_lines(content)
+    in_fence: tuple[str, int] | None = None
+    previous_level = 0
+    changes = []
+    heading_re = re.compile(r"^(#{1,6})([ \t]+.+)$")
+    fence_re = re.compile(r"^\s*([`~]{3,})")
+    for index, raw_line in enumerate(lines):
+        line = raw_line.rstrip("\r")
+        fence = fence_re.match(line)
+        if fence:
+            marker = fence.group(1)[0]
+            length = len(fence.group(1))
+            if in_fence and marker == in_fence[0] and length >= in_fence[1]:
+                in_fence = None
+            elif in_fence is None:
+                in_fence = (marker, length)
+            continue
+        if in_fence:
+            continue
+        match = heading_re.match(line)
+        if not match:
+            continue
+        level = len(match.group(1))
+        allowed = 1 if previous_level == 0 else min(6, previous_level + max(1, max_increment))
+        new_level = min(level, allowed)
+        if new_level != level:
+            lines[index] = "#" * new_level + match.group(2)
+            changes.append({"line": index + 1, "old_level": level, "new_level": new_level})
+        previous_level = new_level
+    if dry_run:
+        return {"success": True, "path": str(resolved_path), "changed": False, "dry_run": True, "change_count": len(changes), "changes": changes}
+    updated = "\n".join(lines) + ("\n" if content.endswith("\n") else "")
+    write = _write_markdown_file(resolved_path, updated, encoding)
+    return {"success": True, "path": str(resolved_path), **write, "bytes_before": size, "change_count": len(changes), "changes": changes}
+
+@mcp.tool()
+def md_check_internal_links(path: str) -> dict[str, Any]:
+    """Validate local file links and same-file heading anchors without remote checks."""
+    result = md_validate_links(path, check_remote=False)
+    result["remote_checked"] = False
+    return result
 
 @mcp.tool()
 def md_set_heading_level(path: str, level: int, heading: str | None = None, heading_path: list[str] | None = None, exact: bool = False) -> dict[str, Any]:
@@ -1208,3 +1360,6 @@ def md_render_diagram(path: str, output_path: str, diagram_index: int = 0, repla
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
+
+
+
