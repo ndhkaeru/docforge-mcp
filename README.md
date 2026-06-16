@@ -269,19 +269,6 @@ Build output goes to `dist\*-tools.exe` and is ignored by git.
 
 ---
 
-## Release Process
-
-The release workflow runs when a tag matching `v*.*.*` is pushed.
-
-```powershell
-git tag -a v1.0.0 -m "Release v1.0.0"
-git push origin v1.0.0
-```
-
-The workflow verifies tests, builds Windows x64 executables, generates SHA256 checksums, and publishes a GitHub Release.
-
----
-
 ## Notes and Limits
 
 - Excel `convert_to_markdown` is read-only and can handle Excel-family files readable by the converter; Excel session/edit/save tools are `.xlsx`-only to avoid silent data loss.
@@ -290,12 +277,6 @@ The workflow verifies tests, builds Windows x64 executables, generates SHA256 ch
 - Markdown diagram validation/rendering depends on optional external CLIs such as Mermaid CLI.
 - PDF conversion is best-effort text extraction, not pixel-perfect layout reconstruction.
 - Release binaries are Windows x64 executables.
-
----
-
-## Repository Hygiene
-
-Commit source, tests, docs, and workflows. Do not commit local environments, build outputs, release artifacts, logs, or local-only build helpers.
 
 ---
 
