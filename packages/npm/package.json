@@ -1,6 +1,6 @@
 {
   "name": "@ndhkaeru/docforge-mcp",
-  "version": "0.1.0",
+  "version": "1.0.2",
   "description": "Run DocForge MCP stdio servers for document workflows via npm/npx.",
   "license": "Apache-2.0",
   "type": "commonjs",
@@ -35,5 +35,3 @@
     "node": ">=18"
   }
 }
-
-
