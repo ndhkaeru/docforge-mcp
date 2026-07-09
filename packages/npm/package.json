@@ -1,0 +1,35 @@
+{
+  "name": "@ndhkaeru/docloupe-mcp",
+  "version": "1.0.0",
+  "description": "Run DocLoupe MCP stdio servers for document workflows via npm/npx.",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "bin": {
+    "docloupe-mcp": "bin/docloupe-mcp.js",
+    "docloupe-excel-tools": "bin/docloupe-excel-tools.js",
+    "docloupe-md-tools": "bin/docloupe-md-tools.js",
+    "docloupe-pdf-tools": "bin/docloupe-pdf-tools.js",
+    "docloupe-docx-tools": "bin/docloupe-docx-tools.js",
+    "docloupe-pptx-tools": "bin/docloupe-pptx-tools.js",
+    "docloupe-csv-tools": "bin/docloupe-csv-tools.js",
+    "docloupe-html-tools": "bin/docloupe-html-tools.js",
+    "docloupe-text-tools": "bin/docloupe-text-tools.js",
+    "docloupe-json-tools": "bin/docloupe-json-tools.js"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "scripts": {
+    "check": "node --check bin/docloupe-mcp.js",
+    "pack:dry-run": "npm pack --dry-run"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ndhkaeru/docloupe-mcp.git"
+  },
+  "mcpName": "io.github.ndhkaeru/docloupe-mcp",
+  "engines": {
+    "node": ">=18"
+  }
+}
