@@ -8,6 +8,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const SERVERS = new Set(['excel', 'md', 'pdf', 'docx', 'pptx', 'csv', 'html', 'text', 'json']);
+const RETRYABLE_RENAME_ERRORS = new Set(['EACCES', 'EBUSY', 'EPERM']);
 const OWNER = 'ndhkaeru';
 const REPO = 'docloupe-mcp';
 
@@ -64,6 +65,24 @@ function assetUrl(server) {
   return `https://github.com/${OWNER}/${REPO}/releases/download/${releaseTag()}/${asset}`;
 }
 
+function renameWithRetry(sourcePath, outputPath, attempt = 0) {
+  return new Promise((resolve, reject) => {
+    fs.rename(sourcePath, outputPath, (error) => {
+      if (!error) {
+        resolve();
+        return;
+      }
+      if (!RETRYABLE_RENAME_ERRORS.has(error.code) || attempt >= 9) {
+        reject(error);
+        return;
+      }
+      setTimeout(() => {
+        renameWithRetry(sourcePath, outputPath, attempt + 1).then(resolve, reject);
+      }, 50 * (attempt + 1));
+    });
+  });
+}
+
 function download(url, outputPath, redirects = 0) {
   return new Promise((resolve, reject) => {
     const request = https.get(url, { headers: { 'User-Agent': 'docloupe-mcp-npm' } }, (response) => {
@@ -87,9 +106,10 @@ function download(url, outputPath, redirects = 0) {
       response.pipe(file);
       file.on('finish', () => {
         file.close(() => {
-          fs.renameSync(tmpPath, outputPath);
-          if (process.platform !== 'win32') fs.chmodSync(outputPath, 0o755);
-          resolve();
+          renameWithRetry(tmpPath, outputPath).then(() => {
+            if (process.platform !== 'win32') fs.chmodSync(outputPath, 0o755);
+            resolve();
+          }, reject);
         });
       });
       file.on('error', (error) => {
